@@ -59,7 +59,8 @@ entity INES_reader is
 			  spi_cs   : out STD_LOGIC;
 			  spi_din  : in STD_LOGIC;
 			  spi_dout : out STD_LOGIC;
-			  spi_busy : out STD_LOGIC);
+			  spi_busy : out STD_LOGIC;
+			  DBG_state : out std_logic_vector(7 downto 0));
 end INES_reader;
 
 architecture Behavioral of INES_reader is
@@ -79,7 +80,8 @@ architecture Behavioral of INES_reader is
 		ask_write_data : IN  std_logic;
 		ask_write_page : IN  std_logic;
 		ask_erase_sector : IN  std_logic;
-		data_ready, ready_state : OUT  std_logic
+		data_ready, ready_state : OUT  std_logic;
+		DBG_state : out std_logic_vector(7 downto 0)
 	  );
 	END COMPONENT;
 
@@ -183,7 +185,8 @@ begin
 				 ask_write_page => ask_write_page,
 				 ask_erase_sector => ask_erase_sector,
 				 data_ready => data_Flash_ready,
-				 ready_state => ready_state);	
+				 ready_state => ready_state,
+				 DBG_state => DBG_state);	
 
 process(clk)
 	variable address_tmp : integer range 0 to 2097151 :=0;	--SPI ROM 2MB
@@ -698,4 +701,3 @@ end process;
 	  );
 
 end Behavioral;
-
