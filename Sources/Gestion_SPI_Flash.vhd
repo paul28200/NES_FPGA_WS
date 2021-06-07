@@ -20,6 +20,7 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use ieee.std_logic_unsigned.all;
+use ieee.numeric_std.all;
 
 entity Gestion_SPI_Flash is
 				Port (
@@ -32,11 +33,11 @@ entity Gestion_SPI_Flash is
 				 data_read : out std_logic_vector(7 downto 0);
 				 data_write : in std_logic_vector(7 downto 0);
 				 start_address : in std_logic_vector(23 downto 0);
-				 ask_read_data : in std_logic;	-- 1 = ask for reading value in memory, 0 to ackknowledge
-				 ask_write_data : in std_logic;	-- 1 = a data to be write is ready
-				 ask_write_page : in std_logic;	-- 1 = launch a Page Program sequence, return to 0 to write the data sent
-				 ask_erase_sector : in std_logic;
-				 data_ready, ready_state : out std_logic);				 
+				 data_wr : out std_logic;	-- Output 1 during one clock to read /  write data
+				 read_data : in std_logic;	-- 1 = ask for reading values in memory, reads data till return to 0
+				 write_data : in std_logic;	-- 1 = ask for writing values in memory, reads data till return to 0
+				 erase_sector : in std_logic;
+				 busy : out std_logic);	 
 end Gestion_SPI_Flash;
 
 architecture Behavioral of Gestion_SPI_Flash is
@@ -72,26 +73,25 @@ constant DP :   std_logic_vector (7 downto 0) := x"B9";  -- deep power down
 constant RES :  std_logic_vector (7 downto 0) := x"AB";  -- read signature
 
 -- States Definition
-type state_t is (S0, S1, S2, S3, S4, S5, S6, S7, S8, S9,		-- Reset and Read
-						S10, S11, S12, S13, S14, S15, S16, S17, S18, S19, S20);	-- Page Program / Sector Erase
+type state_t is (S0, S1, S2, S3, S4, S5, S6, S7, S8,  S9,		-- Reset and Read
+						S10, S11, S12, S13, S14, S15, S16, S17, S18, S19);	-- Page Program / Sector Erase
 
-signal state : state_t;
+signal state : state_t := S0;
 
 -- Signals
-signal sel: std_logic;
-signal wr: std_logic;
+signal sel: std_logic := '0';
+signal wr: std_logic := '0';
 signal addr: std_logic_vector (2 downto 0);
 signal d_in, d_out : std_logic_vector(7 downto 0);
-signal clr : std_logic;
+signal clr : std_logic := '0';
 
 -- Two counters;
-signal spi_clk_cnt, spi_clk_cnt_next: std_logic_vector (5 downto 0);
-signal locations_cnt, locations_cnt_next: std_logic_vector (3 downto 0);
+signal spi_clk_cnt : std_logic_vector (5 downto 0) := (others => '0');
 
 -- this is a signal that triggers re-setting counter1 to
 -- the magic number 32, from where reading a new memory
 -- location begins;
-signal reset_spi_clk_cnt_to_32 : std_logic;
+signal reset_spi_clk_cnt_to_32 : std_logic := '0';
 
 begin
 
@@ -117,7 +117,7 @@ begin
 	elsif reset_spi_clk_cnt_to_32 = '1' then
 		spi_clk_cnt <= "100000";
 	elsif falling_edge (spi_clk) then
-		spi_clk_cnt <= spi_clk_cnt + 1;	
+		spi_clk_cnt <= spi_clk_cnt + 1;
 	end if;
 end process;
 
@@ -126,15 +126,15 @@ process (clk)
 begin
 	if clk='1' and clk'event then
 		reset_spi_clk_cnt_to_32 <= '0';
+		data_wr <= '0';
 		case state is
 			when S0 =>
+--				reset_spi_clk_cnt_to_32 <= '1';
 				sel <= '0';
-				data_ready <= '0';
-				ready_state <= '1';
 				addr <= "000"; wr <= '0'; d_in <= NOP;
-				if ask_read_data = '1' then					
+				if read_data = '1' then					
 					state <= S1;
-				elsif ask_write_page = '1' or ask_erase_sector = '1' then	
+				elsif write_data = '1' then	
 					state <= S9;							
 				end if;
 			when S1 => -- the command 
@@ -150,7 +150,6 @@ begin
 				-- the SPI controller transmits (tx_) or receives (rx_) and the 
 				-- aplication logic which uses the SPI controller, reads (rd_) or 
 				-- writes (wr_) into the controller;
-				ready_state <= '0';
 				sel <= '1'; 
 				addr <= "001"; -- tells the spi_ctrl this is a command 
 				wr <= '1';
@@ -177,7 +176,6 @@ begin
 					state <= S5;
 				end if;
 			when S5 => -- memory data is being received	 
---				data_ready <= '0';
 				addr <= "001"; wr <= '0'; d_in <= NOP;
 				if  spi_clk_cnt = "101000" then -- 32+8=40
 					state <= S6;
@@ -187,7 +185,6 @@ begin
 				-- transmitted via SPI from Flash to the SPI controller; that is true, but
 				-- we need a few more cycles to have basically the info going:
 				-- rx_sreg --> rx_data --> d_out == leds_next --> leds
---				data_ready <= '0';
 --				addr <= "001"; wr <= '0'; d_in <= NOP;	
 				if d_out(2) = '1' then
 					-- If the reg bit is ready then next step
@@ -197,32 +194,24 @@ begin
 			when S7 => 
 				data_read <= d_out;
 				sel <= '0'; 
-				data_ready <= '1';
-				if ask_read_data ='0' then	-- Go to next step only if data is aknowledged by receiver
-					state <= S8;
+				data_wr <= '1';
+				state <= S8;
+			when S8 =>
+				-- reset counter1 to 32 and go back to state S5 to start
+				-- receiving the contets of the next memory location;
+				-- this is done by setting reset_spi_clk_cnt_to_32
+				-- which triggers the counter reset in a different process;
+				-- NOTE: you should study this (and convince yourself about it) with the
+				-- Aldec-HDL simulations;
+				reset_spi_clk_cnt_to_32 <= '1';
+				sel <= '1'; 
+				state <= S0;
+				if read_data ='1' then	
+					state <= S5;
 				end if;
-			when S8 => 
-				data_ready <= '0';
-				-- NOTE: locations_cnt is the one that keeps track - in this
-				-- hard coded manner - of how many locations we want to read;
-				-- NOTE on the Atlys board only the content of the last memory
-				-- location will be displayed; well, in fact each, but they are
-				-- displayed at high frequency and we cannot see it :);
-				if ask_read_data ='1' then	
-					-- reset counter1 to 32 and go back to state S5 to start
-					-- receiving the contets of the next memory location;
-					-- this is done by setting reset_spi_clk_cnt_to_32
-					-- which triggers the counter reset in a different process;
-					-- NOTE: you should study this (and convince yourself about it) with the
-					-- Aldec-HDL simulations;
-					reset_spi_clk_cnt_to_32 <= '1';
-					sel <= '1'; 
-					state <= S5; 
-				end if;				
-			
+
 			-- Writing page process (Page Program) / Sector Erase
 			when S9 =>
-				ready_state <= '0';
 				sel <= '1'; wr <= '1';
 				addr <= "001"; -- tells the spi_ctrl this is a command 
 				d_in <= WREN; -- Write enable command first before writing	 
@@ -230,7 +219,7 @@ begin
 					state <= S10;
 				end if;
 			when S10 =>
-				if ask_erase_sector = '1' then
+				if erase_sector = '1' then
 					d_in <= SE;
 				else
 					d_in <= PP; -- Page program
@@ -255,8 +244,8 @@ begin
 				d_in <= x"00"; -- page program, low byte address is irrelevant
 				if spi_clk_cnt = "101000" then -- 32+8=40
 					clr <= '1';	-- Reset spi_clk_cnt
-					if ask_erase_sector = '1' then
-						state <= S20;
+					if erase_sector = '1' then
+						state <= S17;
 					else
 						state <= S14;
 					end if;
@@ -268,18 +257,16 @@ begin
 				if spi_clk_cnt = "001000" then -- 8			
 					clr <= '1';	-- Reset spi_clk_cnt
 					state <= S15;
+					data_wr <= '1';
 				end if;
 			when S15 =>
-				clr <= '0'; sel <= '0'; data_ready <= '1';
-				if ask_write_data = '0' then	-- Go to next step only if write is aknowledged by receiver
-					state <= S16;
-				end if;
+				clr <= '0'; sel <= '0';
+				state <= S16;
 			when S16 =>
-				if ask_write_page = '0' then	-- Ends Page Program
+				if write_data = '0' then	-- Ends Page Program
 					clr <= '1';	-- Reset spi_clk_cnt
 					state <= S17;
-				elsif ask_write_data = '1' then	-- Continue data sent
-					data_ready <= '0';
+				else	-- Continue data sent
 					state <= S14;			
 				end if;
 			when S17 =>	-- Send read status command
@@ -306,40 +293,17 @@ begin
 					state <= S17;
 				end if;
 				
-			-- Wait for release ask_erase_sector
-			when S20 =>
-				data_ready <= '1';
-				if ask_erase_sector = '0' then
-					state <= S17;
-				end if;
-			
-				-- Sector erase
---				when S18 =>
---					data_ready <= '0';
---					sel <= '1'; wr <= '1';
---					addr <= "001"; -- tells the spi_ctrl this is a command 
---					d_in <= WREN; -- Write enable command first before writing	 
---					if spi_clk_cnt = "001000" then -- it takes 8 spi_clk ticks to transmit command 
---						state <= S19;
---					end if;
---				when S19 =>
---					d_in <= SE; -- Page program	 
---					if spi_clk_cnt = "010000" then -- it takes another 8 spi_clk ticks to transmit command 
---						state <= S20;
---					end if;
---				when S20 =>
-				
 		end case;
 		-- Reset active
 		if rst = '1' then
 			clr <= '0';
 			state <= S0;
+			d_in <= NOP;
+			sel <= '0';
 		end if;
 	end if;
 end process;
 
+busy <= '0' when state = S0 else '1';
 
 end Behavioral;
-
-
-
