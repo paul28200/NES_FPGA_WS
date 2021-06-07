@@ -26,62 +26,59 @@ use ieee.numeric_std.all;
 entity INES_reader is
     Port ( clk, clk_50MHz, M2 : in  STD_LOGIC;
            reset : in  STD_LOGIC;
-			  test : out std_logic_vector(7 downto 0);
+			  test : out STD_LOGIC_VECTOR (7 downto 0);
            done : out  STD_LOGIC;
-			  save_pending : out STD_LOGIC;
-			  save_error : out STD_LOGIC;
 			  irq_n : out  STD_LOGIC;
-			  VRAM_mirror : out STD_LOGIC_VECTOR(1 downto 0);
+			  ask_saving : in STD_LOGIC;
+			  VRAM_mirror : out STD_LOGIC_VECTOR (1 downto 0);
 			  -- SRAM1 ctrl
            address1 : in  STD_LOGIC_VECTOR (14 downto 0);
            data_out1, WRAM_dout : out  STD_LOGIC_VECTOR (7 downto 0);
 			  data_in1 : in  STD_LOGIC_VECTOR (7 downto 0);
 			  ena1, wr1, WRAM_ena : in STD_LOGIC;
 			  -- SRAM1 port
-			  SRAM1_add : out std_logic_vector(18 downto 0);
-			  SRAM1_data : inout std_logic_vector(7 downto 0);
-			  SRAM1_nCS1 : out std_logic;
-			  SRAM1_nOE : out std_logic;
-			  SRAM1_nWE : out std_logic;
+			  SRAM1_add : out STD_LOGIC_VECTOR (18 downto 0);
+			  SRAM1_data : inout STD_LOGIC_VECTOR (7 downto 0);
+			  SRAM1_nCS1 : out STD_LOGIC;
+			  SRAM1_nOE : out STD_LOGIC;
+			  SRAM1_nWE : out STD_LOGIC;
 			  -- SRAM2 ctrl
            address2 : in  STD_LOGIC_VECTOR (12 downto 0);
            data_out2 : out  STD_LOGIC_VECTOR (7 downto 0);
 			  data_in2 : in  STD_LOGIC_VECTOR (7 downto 0);
 			  ena2, wr2 : in STD_LOGIC;
 			  -- SRAM2 port
-			  SRAM2_add : out std_logic_vector(18 downto 0);
-			  SRAM2_data : inout std_logic_vector(7 downto 0);
-			  SRAM2_nCS1 : out std_logic;
-			  SRAM2_nOE : out std_logic;
-			  SRAM2_nWE : out std_logic;
+			  SRAM2_add : out STD_LOGIC_VECTOR (18 downto 0);
+			  SRAM2_data : inout STD_LOGIC_VECTOR (7 downto 0);
+			  SRAM2_nCS1 : out STD_LOGIC;
+			  SRAM2_nOE : out STD_LOGIC;
+			  SRAM2_nWE : out STD_LOGIC;
 			  -- SPI Flash
 			  spi_clk  : buffer STD_LOGIC;
 			  spi_cs   : out STD_LOGIC;
 			  spi_din  : in STD_LOGIC;
 			  spi_dout : out STD_LOGIC;
-			  spi_busy : out STD_LOGIC;
-			  DBG_state : out std_logic_vector(7 downto 0));
+			  spi_status : out STD_LOGIC_VECTOR(2 downto 0));
 end INES_reader;
 
 architecture Behavioral of INES_reader is
 
 	COMPONENT Gestion_SPI_Flash
 	 PORT(
-		clk : IN  std_logic;
-		rst : IN  std_logic;
-		spi_clk : BUFFER std_logic;
-		spi_cs : OUT  std_logic;
-		spi_din : IN  std_logic;
-		spi_dout : OUT  std_logic;
-		data_read : OUT  std_logic_vector(7 downto 0);
-		data_write : IN std_logic_vector(7 downto 0);
-		start_address : IN  std_logic_vector(23 downto 0);
-		ask_read_data : IN  std_logic;
-		ask_write_data : IN  std_logic;
-		ask_write_page : IN  std_logic;
-		ask_erase_sector : IN  std_logic;
-		data_ready, ready_state : OUT  std_logic;
-		DBG_state : out std_logic_vector(7 downto 0)
+				 clk      : in std_logic;
+				 rst      : in std_logic;
+				 spi_clk  : buffer std_logic;
+				 spi_cs   : out std_logic;
+				 spi_din  : in std_logic;
+				 spi_dout : out std_logic;
+				 data_read : out std_logic_vector(7 downto 0);
+				 data_write : in std_logic_vector(7 downto 0);
+				 start_address : in std_logic_vector(23 downto 0);
+				 data_wr : out std_logic;	-- Output 1 during one clock to read /  write data
+				 read_data : in std_logic;	-- 1 = ask for reading values in memory, reads data till return to 0
+				 write_data : in std_logic;	-- 1 = ask for writing values in memory, reads data till return to 0
+				 erase_sector : in std_logic;
+				 busy : out std_logic
 	  );
 	END COMPONENT;
 
@@ -112,27 +109,33 @@ architecture Behavioral of INES_reader is
 	  );
 	END COMPONENT;
 
-	TYPE CONTROL IS(load_data0, header_count,
-						load_data1, enable1, disable1, 
-						load_data2, enable2, disable2,
-						check_init, check_load, check_next,
-						wram_init, wram_load, wload_data, wload_disable,
-						write_wram, wait_sector_erase, page_program, wait_data_write, page_write, next_page,
-						init_done, std_by);
+	TYPE CONTROL is(init_spi,		-- 0
+						load_header,	-- 1
+						load_prg,		-- 2
+						load_chr,		-- 3
+						wram_init,		-- 4
+						wram_load,		-- 5
+						check_init,		-- 6
+						check_load,		-- 7
+						erase_init,		-- 8
+						wait_sector_erase,	-- 9
+						page_program,	-- A
+						wait_data_write,	-- B
+						init_done,		-- C
+						std_by);				-- D
 	SIGNAL state : CONTROL :=std_by;
 
-	signal SRAM2_data_prog : std_logic_vector(7 downto 0);
-	signal SRAM2_dout : std_logic; 
-	signal SRAM2_nWE_prog : std_logic;
-	signal SRAM_add_prog, SRAM2_add_prog : std_logic_vector(18 downto 0);
 	
-	signal done_tmp : std_logic;
+	signal done_r : std_logic;
+	signal address_init : std_logic_vector(18 downto 0);
 	
 	-- SPI Flash signals
 	signal start_address : std_logic_vector(23 downto 0);
 	signal rst_spi, ready_state : std_logic;
-	signal ask_erase_sector, ask_write_data, ask_write_page, ask_data_from_Flash, data_Flash_ready : std_logic;
+	signal ask_erase_sector, ask_write_data, ask_write_page, ask_data_from_Flash : std_logic;
 	signal data_read_Flash, data_write : std_logic_vector(7 downto 0);
+	signal save_error, save_pending : std_logic := '0';
+	signal spi_busy, data_wr, busy_r : std_logic;
 
 	-- INES File headers
 	signal PRG_size, CHR_size, Flag6, Flag7 : std_logic_vector(7 downto 0) := x"00";
@@ -148,8 +151,8 @@ architecture Behavioral of INES_reader is
 	signal mapper1reg1, mapper1reg2, mapper1reg3 : std_logic_vector(4 downto 0);
 	signal mapper2reg : std_logic_vector(2 downto 0);
 	signal mapper3reg : std_logic_vector(1 downto 0);
-	signal add1_mapper, add1_map1, add1_map2, add1_map4 : std_logic_vector(18 downto 13);
-	signal add2_mapper, add2_map1, add2_map3, add2_map4 : std_logic_vector(18 downto 10);
+	signal add1_mapper : std_logic_vector(18 downto 13);
+	signal add2_mapper : std_logic_vector(18 downto 10);
 	signal mapper4_BankSelect, mapper4_BankData, mapper4_IrqLatch : std_logic_vector(7 downto 0);
 	signal mapper4_IrqReload, mapper4_IrqEnable : std_logic;
 	signal mapper4_R0, mapper4_R1, mapper4_R2, mapper4_R3 : std_logic_vector(7 downto 0);
@@ -157,21 +160,21 @@ architecture Behavioral of INES_reader is
 	signal mapper4_RamProtect : std_logic_vector(1 downto 0);
 	
 	-- WRAM signals
-	signal WRAM_douta, WRAM_doutb, WRAM_dinb : std_logic_vector(7 downto 0);
-	signal WRAM_addr : std_logic_vector(12 downto 0);
-	signal write_pending, WRAM_wra, WRAM_wrb, wram_protect : std_logic;
+	signal WRAM_wra, WRAM_wrb, WRAM_unlock : std_logic;
 	signal WRAM_sector : std_logic_vector(7 downto 0);
 	signal save_cnt : integer range 0 to 63;
 	
 	-- ID_RAM signals
-	signal ID_RAM_din, ID_RAM_dout : std_logic_vector(7 downto 0);
-	signal ID_RAM_addr : std_logic_vector(3 downto 0);
-	signal ID_RAM_ena, ID_RAM_wr : std_logic;
+	signal ID_RAM_dout : std_logic_vector(7 downto 0);
+	signal ID_RAM_wr, ID_RAM_ena : std_logic;
+	signal ID_RAM_wr2, ID_RAM_ena2 : std_logic;
+	
+	signal idaddr : std_logic_vector(3 downto 0);
 
 begin
 
 	Inst_Gestion_SPI_Flash : Gestion_SPI_Flash Port map(
-				 clk      => clk_50MHz,
+				 clk      => clk,
 				 rst      => rst_spi,
 				 spi_clk  => spi_clk,
 				 spi_cs   => spi_cs,
@@ -179,348 +182,243 @@ begin
 				 spi_dout => spi_dout,
 				 data_read => data_read_Flash,
 				 data_write => data_write,
+				 data_wr => data_wr,
 				 start_address => start_address,
-				 ask_read_data => ask_data_from_Flash,
-				 ask_write_data => ask_write_data,
-				 ask_write_page => ask_write_page,
-				 ask_erase_sector => ask_erase_sector,
-				 data_ready => data_Flash_ready,
-				 ready_state => ready_state,
-				 DBG_state => DBG_state);	
+				 read_data => ask_data_from_Flash,
+				 write_data => ask_write_data,
+				 erase_sector => ask_erase_sector,
+				 busy => busy_r);
 
 process(clk)
 	variable address_tmp : integer range 0 to 2097151 :=0;	--SPI ROM 2MB
-	variable save_pending_tmp : std_logic := '0';
 begin
 if clk'event and clk='1' then
-	if reset='1' then
+	if reset = '1' then
 		rst_spi <= '1';
-		done_tmp <= '0';
-		SRAM1_data <= (others => 'Z');
-		SRAM1_nCS1 <= '1';
-		SRAM1_nOE <= '1';
-		SRAM1_nWE <= '1';
---		SRAM2_data <= (others => 'Z');
-		SRAM2_dout <= '0';
-		SRAM2_nCS1 <= '1';
-		SRAM2_nOE <= '1';
-		SRAM2_nWE_prog <= '1';
-		WRAM_wrb <= '0';
+		done_r <= '0';
 		address_tmp := 0;
-		save_pending_tmp := '0';
 		ask_write_data <= '0';
 		ask_write_page <= '0';
 		ask_erase_sector <= '0';
 		Flag6 <= x"00";
 		Flag7 <= x"00";
-		spi_busy <= '0';
-		state <= load_data0;
+		WRAM_unlock <= '0';
+		save_pending <= '0';
+		state <= init_spi;
 	else
-		CASE state IS
-			WHEN std_by =>
-				spi_busy <= '0';
+		ID_RAM_ena <= '0';
+ID_RAM_ena2 <= '1';
+		address_init <= std_logic_vector(to_unsigned(address_tmp, address_init'length));
+		-- Lauch a save of WRAM at reset
+		if state = init_done and save_pending = '1' and ask_saving = '1' then
+			WRAM_unlock <= '0';	-- Lock the WRAM
+			state <= check_init;
+		end if;
+		case state is
+			when std_by =>
 			--Reads Header of .INES Files
-			WHEN load_data0 =>
-				spi_busy <= '1';
-				rst_spi <= '0';
-				start_address <= x"000000";	--Starts at the begining of the SPI ROM
-				ask_data_from_Flash <= '1';
-				state <= load_data0;	
-				if data_Flash_ready ='1' then	-- Waiting for data read from SIP Flash
-					CASE address_tmp IS
-						-- Check for Ines file identifier "NES + MS-DOS end-of-file"
-						WHEN 0 =>
-							if data_read_Flash /= x"4E" then
-								state <= std_by;
-							end if;
-						WHEN 1 =>
-							if data_read_Flash /= x"45" then
-								state <= std_by;
-							end if;
-						WHEN 2 =>
-							if data_read_Flash /= x"53" then
-								state <= std_by;
-							end if;
-						WHEN 3 =>
-							if data_read_Flash /= x"1A" then
-								state <= std_by;
-							end if;
-						WHEN 4 =>
-							PRG_size <= data_read_Flash;
-						WHEN 5 =>
-							CHR_size <= data_read_Flash;
-						WHEN 6 =>
-							Flag6 <= data_read_Flash;
-						WHEN 7 =>
-							Flag7 <= data_read_Flash;
-						WHEN others =>	
-					END CASE;
-					ask_data_from_Flash <= '0'; -- acknoledge data received
-					state <= header_count;
-				end if;				
-			WHEN header_count =>
-				if data_Flash_ready ='0' then
+			when init_spi =>
+				start_address <= x"000000";
+				address_tmp := 0;
+				rst_spi <= '1';	-- Need to reset for load new start address
+				if busy_r = '0' then	-- Reset took in account
+					rst_spi <= '0';
 					ask_data_from_Flash <= '1';
-					if address_tmp < 15 then		-- End of Header
-						address_tmp := address_tmp + 1;
-						state <= load_data0;
-					else
+					state <= load_header;
+				end if;
+			when load_header =>
+				if data_wr = '1' then	-- Waiting for data read from SIP Flash
+					case address_tmp is
+						-- Check for Ines file identifier "NES + MS-DOS end-of-file"
+						when 0 =>	if data_read_Flash /= x"4E" then state <= std_by; end if;
+						when 1 =>	if data_read_Flash /= x"45" then	state <= std_by; end if;
+						when 2 =>	if data_read_Flash /= x"53" then state <= std_by; end if;
+						when 3 =>	if data_read_Flash /= x"1A" then state <= std_by; end if;
+						when 4 =>	PRG_size <= data_read_Flash;
+						when 5 =>	CHR_size <= data_read_Flash;
+						when 6 =>	Flag6 <= data_read_Flash;
+						when 7 =>	Flag7 <= data_read_Flash;
+						when others =>	
+					end case;
+					address_tmp := address_tmp + 1;
+					if address_tmp > 15 then		-- End of Header
 						address_tmp := 0;
-						ID_RAM_addr <= (others => '0');
 						-- Calculate the sector of WRAM data. Starts at the next sector of 64kB after PRG_ROM + CHR_ROM
 						WRAM_sector <= std_logic_vector(to_unsigned((to_integer(unsigned(PRG_size & '0')) + to_integer(unsigned(CHR_size))) / 8 + 1, 8));
-						state <= load_data1;
+						state <= load_prg;
 					end if;
-				end if;	
+				end if;
 
 			--Reads PRG ROM
 			--SRAM1 program
 			--Program the ID_RAM for the 256 first bytes to identify what SPI ROM is connected
-			WHEN load_data1 =>
-				if data_Flash_ready ='1' then	-- Waiting for data read from SIP Flash
-					SRAM1_nCS1 <= '0';
-					SRAM1_nWE <= '0';
-					SRAM1_data <= data_read_Flash;
-					ask_data_from_Flash <= '0'; -- acknoledge data received
-					SRAM_add_prog <= std_logic_vector(to_unsigned(address_tmp, 19));
-					ID_RAM_din <= data_read_Flash;
-					ID_RAM_addr <= std_logic_vector(to_unsigned(address_tmp, 4));
---					if address_tmp < 256 then
-						ID_RAM_ena <= '1'; ID_RAM_wr <= '1';
---					else
---						ID_RAM_ena <= '0';
---					end if;
-					state <= enable1;
-				end if;
-			WHEN enable1 =>
-				SRAM1_nWE <= '1';
-				state <= disable1;
-			WHEN disable1 =>
-				SRAM1_nCS1 <= '1';
-				ID_RAM_wr <= '0';
-				if data_Flash_ready ='0' then
-					ask_data_from_Flash <= '1';
-					add1_mask <= std_logic_vector(to_unsigned(address_tmp/16#04000#, add1_mask'length));
+			when load_prg =>
+				-- ID RAM is always enabled to save the last page of PRG ROM
+				ID_RAM_ena <= '1';
+				add1_mask <= std_logic_vector(to_unsigned(address_tmp/16#04000#, add1_mask'length));
+				if data_wr ='1' then	-- Waiting for data read from SIP Flash
 					address_tmp := address_tmp + 1;
-					if address_tmp / 16#04000# < to_integer(unsigned(PRG_size)) then		-- Count blocks of $4000			
-						state <= load_data1;
-					else
+					if address_tmp / 16#04000# >= to_integer(unsigned(PRG_size)) then		-- Count blocks of $4000
 						--End of reading PRG ROM
-						SRAM1_data <= (others => 'Z');
-						SRAM1_nCS1 <= '1';
-						SRAM1_nOE <= '1';
-						SRAM1_nWE <= '1';
 						address_tmp := 0;
 						if CHR_size = x"00" then
 							state <= wram_init;
+							ask_data_from_Flash <= '0';
 						else
-							state <= load_data2;
+							state <= load_chr;
 						end if;
 					end if;
 				end if;
 
 			--SRAM2 parameter, CHR ROM start in SPI Flash after reading PRG ROM			
 			--SRAM2 program
-			WHEN load_data2 =>
-				if data_Flash_ready ='1' then	-- Waiting for data read from SIP Flash
-					SRAM2_nCS1 <= '0';
-					SRAM2_nWE_prog <= '0';
-					SRAM2_data_prog <= data_read_Flash;
-					SRAM2_dout <= '1';
-					ask_data_from_Flash <= '0'; -- acknowledge data received
-					SRAM_add_prog <= std_logic_vector(to_unsigned(address_tmp, 19));
-					state <= enable2;
-				else
-					state <= load_data2;
-				end if;
-			WHEN enable2 =>
-				SRAM2_nWE_prog <= '1';
-				state <= disable2;
-			WHEN disable2 =>
-				SRAM2_nCS1 <= '1';
-				if data_Flash_ready ='0' then
-					ask_data_from_Flash <= '1';
-					add2_mask <= std_logic_vector(to_unsigned(address_tmp/16#02000#, add2_mask'length));
+			when load_chr =>
+				add2_mask <= std_logic_vector(to_unsigned(address_tmp/16#02000#, add2_mask'length));
+				if data_wr ='1' then	-- Waiting for data read from SIP Flash
 					address_tmp := address_tmp + 1;
-					if address_tmp / 16#02000# < to_integer(unsigned(CHR_size)) then		-- Count blocks of $2000			
-						state <= load_data2;
-					else
+					if address_tmp / 16#02000# >= to_integer(unsigned(CHR_size)) then		-- Count blocks of $2000
 						--End of reading CHR ROM
-						SRAM2_dout <= '0';
-						SRAM2_nCS1 <= '1';
-						SRAM2_nOE <= '1';
-						SRAM2_nWE_prog <= '1';
 						state <= wram_init;
-					end if;
-				end if;			
-
-			-- Loading of WRAM data if exists
-			WHEN wram_init =>	test <= x"E4";
-				-- Test if there is WRAM
-				if Flag6(1) = '1' then
-					start_address <= WRAM_sector & x"0000";	-- WRAM is located at the begining of a sector
-					state <= wram_load;
-				else
-					state <= init_done;
-				end if;
-			WHEN wram_load =>
-				rst_spi <= '1';	-- Need to reset for load new start address
-				address_tmp := 0;
-				if ready_state = '1' then	-- Reset took in account
-					rst_spi <= '0';		
-					ask_data_from_Flash <= '1';
-					state <= wload_data;
-				end if;
-			WHEN wload_data =>
-				if data_Flash_ready ='1' then	-- Waiting for data read from SIP Flash
-					WRAM_wrb <= '1';
-					ask_data_from_Flash <= '0'; -- acknowledge data received
-					WRAM_addr <= std_logic_vector(to_unsigned(address_tmp, 13));
-					WRAM_dinb <= data_read_Flash;
-					state <= wload_disable;
-				end if;				
-			WHEN wload_disable =>
-				WRAM_wrb <= '0';
-				if data_Flash_ready = '0' then
-					ask_data_from_Flash <= '1';
-					address_tmp := address_tmp + 1;
-					if address_tmp < 8192 then		-- WRAM is 8192 bytes
-						state <= wload_data;
-					else
-						--End of reading WRAM data
-						save_cnt <= 1;
-						state <= init_done;
+						ask_data_from_Flash <= '0';
 					end if;
 				end if;	
 
-			WHEN init_done =>
+			-- Loading of WRAM data if exists
+			when wram_init =>
+				-- Test if there is WRAM
+				if Flag6(1) = '1' then
+					start_address <= WRAM_sector & x"0000";	-- WRAM is located at the begining of a sector
+					address_tmp := 0;
+					rst_spi <= '1';	-- Need to reset for load new start address
+					if busy_r = '0' then	-- Reset took in account
+						rst_spi <= '0';
+						ask_data_from_Flash <= '1';
+						state <= wram_load;
+					end if;
+				else
+					state <= init_done;
+				end if;
+			when wram_load =>
+				if data_wr ='1' then	-- Waiting for data read from SIP Flash
+					address_tmp := address_tmp + 1;
+					if address_tmp >= 8192 then	-- WRAM is 8192 bytes
+						--End of reading WRAM data
+						ask_data_from_Flash <= '0';
+--						save_cnt <= 1;
+						state <= init_done;
+					end if;
+				end if;			
+
+			when init_done =>
 				rst_spi <= '1';	-- Need to reset for load new start address
-				done_tmp <= '1';
-				SRAM1_nCS1 <= '0';
-				SRAM1_nOE <= '0';
-				SRAM1_nWE <= '1';
-				SRAM2_nCS1 <= '0';
-				SRAM2_nOE <= '0';
-				SRAM2_nWE_prog <= '1';
+				done_r <= '1';
 				ask_write_data <= '0';
 				ask_write_page <= '0';
 				ask_erase_sector <= '0';
 				ask_data_from_Flash <= '0';
-				spi_busy <= '0';
-
+				WRAM_unlock <= '1';
+--state <= check_init;
 				-- Writing to SPI for saving WRAM data
 				if WRAM_ena = '1' and wr1 = '1' and Flag6(1) = '1' then
-					save_pending_tmp := '1';
-					save_cnt <= 32;
+					save_pending <= '1';
+--					save_cnt <= 32;
 				end if;
-				if save_pending_tmp = '1' then
-					if save_cnt mod 64 = 0 then
-						save_pending_tmp := '0';
-						state <= check_init;
-					end if;
-				end if;
-			
+--				if save_pending = '1' then
+--					if save_cnt mod 64 = 0 then
+----						save_pending_tmp <= '0';
+--						state <= check_init;
+--					end if;
+--				end if;
+
+
 			-- Check if the SPI Flash correspond to the game loaded before writing
-			WHEN check_init =>
-				spi_busy <= '1';
-				if ready_state = '1' then	-- Let time to revert to reset state
+			when check_init =>
+				start_address <= "00" & PRG_size & "00000000000000";	-- Load last 16 bytes of PRG ROM
+				WRAM_unlock <= '0';	-- lock the WRAM
+				address_tmp := 0;
+				rst_spi <= '1';	-- Need to reset for load new start address
+				if busy_r = '0' then	-- Reset took in account
 					rst_spi <= '0';
 					ask_data_from_Flash <= '1';
-					start_address <= "00" & PRG_size & "00000000000000";	-- Load last 16 bytes of PRG ROM
-					ID_RAM_addr <= (others => '0');
-					ID_RAM_ena <= '1';
 					state <= check_load;
 				end if;
-			WHEN check_load =>
-				if data_Flash_ready ='1' then
-					ask_data_from_Flash <= '0'; -- acknowledge data received
-					if ID_RAM_dout = data_read_Flash then
-						if ID_RAM_addr = x"F" then
-							rst_spi <= '1';
-							state <= write_wram;	-- Check passed
+			when check_load =>
+ID_RAM_ena <= '0';
+				ID_RAM_ena2 <= '1';
+				if data_wr ='1' then
+						if ID_RAM_dout = data_read_Flash then
+							if address_tmp mod 16 = 15 then
+								ask_data_from_Flash <= '0'; -- acknowledge data received
+								address_tmp := 0;
+								state <= erase_init;	-- Check passed
+--	state <= std_by;
+							end if;
 						else
-							state <= check_next;
+							save_error <= '1';	-- Check failed
+							save_pending <= '0';
+							state <= init_done;
 						end if;
-					else
-						save_error <= '1';	-- Check failed
-						state <= init_done;
-					end if;
-				end if;				
-			WHEN check_next =>
-				if data_Flash_ready = '0' then
-					ask_data_from_Flash <= '1';
-					ID_RAM_addr <= std_logic_vector(unsigned(ID_RAM_addr) + 1);
-					state <= check_load;
+					address_tmp := address_tmp + 1;
 				end if;
-						
+
 			-- Write the content of WRAM in Spi Flash
-			WHEN write_wram =>
-				if ready_state = '1' then	-- Let time to revert to reset state
+			when erase_init =>
+				rst_spi <= '1';
+				if busy_r = '0' then	-- Let time to revert to reset state
+					start_address <= WRAM_sector & x"0000";
 					rst_spi <= '0';
 					ask_erase_sector <= '1';
-					start_address <= WRAM_sector & x"0000";
-					WRAM_addr <= (others => '0');
+					ask_write_data <= '1';
 					state <= wait_sector_erase;
 				end if;
-			WHEN wait_sector_erase =>
-				if data_Flash_ready = '1' then
-					ask_erase_sector <= '0';
+			when wait_sector_erase =>
+				if busy_r = '1' then	-- Erase sector starts
+					ask_write_data <= '0';	-- Return to idle state when erase finished
+					address_tmp := 0;
 					state <= page_program;
 				end if;
-			WHEN page_program =>
-				ask_write_page <= '1';
-				ask_write_data <= '1';
-				data_write <= WRAM_doutb;			
-				start_address <= WRAM_sector & "000" & WRAM_addr(12 downto 8) & x"00";
-				if data_Flash_ready = '0' then
-					WRAM_addr <= std_logic_vector(unsigned(WRAM_addr) + 1);
-					state <= wait_data_write;
-					ask_write_data <= '0';
-				end if;		
-			WHEN wait_data_write =>
-				if data_Flash_ready = '1' then
-					-- Test if a page of bytes has been sent
-					if WRAM_addr(7 downto 0) = x"00" then
-						ask_write_page <= '0';
-						state <= page_write;
-					else
-						state <= page_program;
-					end if;
+			when page_program =>
+				if busy_r = '0' then	-- Page program
+					ask_erase_sector <= '0';
+					start_address <= WRAM_sector & "000" & address_init(12 downto 8) & x"00";
+					ask_write_data <= '1';
 				end if;
-			WHEN page_write =>
-				if ready_state = '1' then	-- Wait finish writing the page
-					if WRAM_addr(12 downto 8) = x"00" then
+				if data_wr = '1' then
+					address_tmp := address_tmp + 1;
+					if (address_tmp mod 256) = 0 then
+						ask_write_data <= '0';	-- Write the page data on flash
+						state <= wait_data_write;
+					end if;
+				end if;		
+			when wait_data_write =>
+				if busy_r = '0' then	-- Flash is ready to receive anither page
+					if (address_tmp / 8192) > 0 then	-- WRAM is 8k
 						save_error <= '0';
+						save_pending <= '0';
 						state <= init_done;
 					else
 						state <= page_program;
 					end if;
 				end if;
-			WHEN next_page =>
-				if ready_state = '1' then	-- Wait to return to idle state
-					state <= page_program;
-				end if;
 
-		END CASE;
+		end case;
 		
 		-- Timer and watchdog for WRAM save
-		if done_tmp = '1' then
-			address_tmp := address_tmp + 1;	-- Use the address_tmp variable as it will be unsed otherway now
-			if address_tmp >= 1048576 then
-				address_tmp := 0;
-				if save_cnt = 0  then
-					state <= init_done;	-- Return to idle_state if timing too long
-				else
-					save_cnt <= save_cnt + 1;
-				end if;
-			end if;
-		end if;
+--		if done_r = '1' then
+--			address_tmp := address_tmp + 1;	-- Use the address_tmp variable as it will be unsed otherway now
+--			if address_tmp >= 1048576 then
+--				address_tmp := 0;
+--				if save_cnt = 0  then
+--					state <= init_done;	-- Return to idle_state if timing too long
+--				else
+--					save_cnt <= save_cnt + 1;
+--				end if;
+--			end if;
+--		end if;
 	end if;
 end if;
-	save_pending <= save_pending_tmp;
 end process;
-done <= done_tmp;
-
+done <= done_r;
 
 -----------------------------------------------------------
 --	Mappers logic
@@ -563,17 +461,26 @@ add2_mapper <=			-- Mapper 1 (MMC1)
 						"111110" & address2(12 downto 10);
 						
 -- Addresses outputs
-SRAM1_add <=	SRAM_add_prog when done_tmp='0' else
+SRAM1_add <=	address_init when state = load_prg else
 					(add1_mapper(18 downto 14) and add1_mask) & add1_mapper(13) & address1(12 downto 0);
-SRAM2_add <=	SRAM_add_prog when done_tmp='0' else
+SRAM1_nWE <=	not data_wr when state = load_prg else '1';
+SRAM1_data <=	data_read_flash when state = load_prg else (others => 'Z');
+SRAM1_nCS1 <=	'1' when reset = '1' else '0';
+SRAM1_nOE <=	'1' when (reset = '1' or  state = load_prg) else '0';
+SRAM2_add <=	address_init when state = load_chr else
 					(add2_mapper(18 downto 13) and add2_mask) & add2_mapper(12 downto 10) & address2(9 downto 0);
-data_out1 <= (others => '-') when done_tmp='0' else SRAM1_data;
-data_out2 <= (others => '-') when done_tmp='0' else SRAM2_data;
-SRAM2_nWE <= SRAM2_nWE_prog when done_tmp='0' else
-					(ena2 nand wr2) when CHR_size = x"00" else '1';
-SRAM2_data <= SRAM2_data_prog when SRAM2_dout ='1' else
+data_out1 <=	(others => '-') when done_r = '0' else SRAM1_data;
+SRAM2_nWE <=	not data_wr when state = load_chr else
+					(ena2 nand wr2) when CHR_size = x"00" and done_r = '1' else
+					'1';
+SRAM2_data <=	data_read_flash when state = load_chr else
 					data_in2 when (ena2='1' and wr2='1') else
 					(others => 'Z');
+SRAM2_nCS1 <=	'1' when reset = '1' else '0';
+SRAM2_nOE <=	'1' when (reset = '1' or  state = load_chr) else
+					'1' when (ena2='1' and wr2='1') else
+					'0';
+data_out2 <=	(others => '-') when done_r = '0' else SRAM2_data;
 
 -- Mapper registers
 process(M2)
@@ -585,7 +492,7 @@ process(M2)
 	variable map4_cnt : integer range 0 to 2;
 begin
 if M2'event and M2='0' then
-	if done_tmp = '0' then
+	if done_r = '0' then
 		mapper1reg0(3 downto 2) <= "11";		--Fix address $C000-$FFFF to last bank
 		mapper2reg <= (others => '0');
 		VRAM_mirror <= not(Flag6(3) & Flag6(0));
@@ -681,23 +588,43 @@ end process;
 		 addra => address1(12 downto 0),
 		 dina => data_in1,
 		 douta => WRAM_dout,
-		 clkb => not clk,
+		 clkb => clk,
 		 web(0) => WRAM_wrb,
-		 addrb => WRAM_addr,
-		 dinb => WRAM_dinb,
-		 doutb => WRAM_doutb
+		 addrb => address_init(12 downto 0),
+		 dinb => data_read_flash,
+		 doutb => data_write
 	  );
-	WRAM_wra <= wr1 and (not mapper4_RamProtect(0));	-- Wrtie protection from MMC3
+	WRAM_wra <= wr1 and WRAM_unlock and (not mapper4_RamProtect(0));	-- Write protection from MMC3
+	WRAM_wrb <= data_wr when state = wram_load else '0';
 
 -- 16 bytes RAM for save the last bytes from PRG ROM (the irq, nmi and reset vectors) to identified the game before saving
 	Inst_ID_RAM : ID_RAM_16
 	  PORT MAP (
-		 clka => not clk,
-		 ena => ID_RAM_ena,
+		 clka => clk,
+		 ena => '1',
 		 wea(0) => ID_RAM_wr,
-		 addra => ID_RAM_addr,
-		 dina => ID_RAM_din,
+		 addra => address_init(3 downto 0),
+		 dina => data_read_flash,
 		 douta => ID_RAM_dout
 	  );
+	ID_RAM_wr <= data_wr when (state = load_prg and ID_RAM_ena = '1') else '0';
+
+	spi_busy <= '0' when (state = init_done or state = std_by) else '1';
+	spi_status <= save_error & save_pending & spi_busy;
+--test <= std_logic_vector(to_unsigned(CONTROL'POS(state),8));
+
+--	Inst_ID_RAM2 : ID_RAM_16
+--	  PORT MAP (
+--		 clka => clk,
+--		 ena => '1',
+--		 wea(0) => ID_RAM_wr2,
+--		 addra => idaddr,--address_init(3 downto 0),
+--		 dina => data_read_flash,
+--		 douta => test--ID_RAM_dout
+--	  );
+--ID_RAM_wr2 <= data_wr when (state = check_load and ID_RAM_ena2 = '1') else '0';
+--idaddr <= address1(3 downto 0) when state = std_by else address_init(3 downto 0);
+
 
 end Behavioral;
+
