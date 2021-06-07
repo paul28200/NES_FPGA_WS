@@ -27,8 +27,8 @@ end spi_ctrl;
 
 architecture rtl of spi_ctrl is
   -- clock generator
-  constant SYS_FREQ : integer := 100000000; -- 100 MHz
-  constant SPI_FREQ : integer := 25000000;  -- 25 MHz
+  constant SYS_FREQ : integer := 21477000; -- 21 MHz
+  constant SPI_FREQ : integer := 5000000;  -- 5 MHz
   signal clk_en : std_logic;
   signal clk_cnt : integer range 0 to (SYS_FREQ/SPI_FREQ)-1;
 
@@ -104,7 +104,7 @@ begin
         else
           spi_clk_int <= '1';
         end if;
-      elsif clk_cnt = ((SYS_FREQ / SPI_FREQ) - 1) then
+      elsif clk_cnt >= ((SYS_FREQ / SPI_FREQ) - 1) then
         clk_cnt <= 0;
         clk_en <= '1';
         spi_clk_int <= '1';
