@@ -20,8 +20,9 @@
 ----------------------------------------------------------------------------------
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
-use ieee.std_logic_unsigned.all;
 use ieee.numeric_std.all;
+Library UNISIM;
+use UNISIM.vcomponents.all;
 
 entity NES_FPGA is
   port (
@@ -53,8 +54,10 @@ entity NES_FPGA is
 		spi_clk  : buffer STD_LOGIC;
 		spi_din  : in STD_LOGIC;
 		spi_dout : out STD_LOGIC;
-		spi_cs   : out STD_LOGIC;	-- Internal SPI Flash
---		spi_cs_e	: out STD_LOGIC;	-- External SPI Flash
+		spi_cs_e   : out STD_LOGIC;	-- External SPI Flash
+
+		-- SPI Flash for configuration (clk, din and dout are common)
+		spi_cs   : out STD_LOGIC;
 
 		--External_SRAM1 (AS6C4008, 512K x 8)
 		SRAM1_add : out std_logic_vector(18 downto 0);
@@ -70,8 +73,15 @@ entity NES_FPGA is
 		SRAM2_nOE : out std_logic;
 		SRAM2_nWE : out std_logic;
 		
+		--Configuration launch
+		conf_launch : out STD_LOGIC := '0';
+		
+		--Configuration SPI select via 74HC595
+		conf_clk : out STD_LOGIC := '0';
+		conf_data : out STD_LOGIC := '0';
+		
 		--External bus
-		Extb : out std_logic_vector(6 downto 0);
+--		Extb : out std_logic_vector(5 downto 2);
 		
 		--LCD Char SPI (74HC595)
 		lcd_clk, lcd_rst, lcd_data : out std_logic
@@ -84,40 +94,39 @@ architecture Behavioral of NES_FPGA is
 	component INES_reader is
     Port ( clk, clk_50MHz, M2 : in  STD_LOGIC;
            reset : in  STD_LOGIC;
-			  test : out std_logic_vector(7 downto 0);
+			  test : out STD_LOGIC_VECTOR (7 downto 0);
            done : out  STD_LOGIC;
-			  save_error : out STD_LOGIC;
 			  irq_n : out  STD_LOGIC;
-			  VRAM_mirror : out STD_LOGIC_VECTOR(1 downto 0);
+			  ask_saving : in STD_LOGIC;
+			  VRAM_mirror : out STD_LOGIC_VECTOR (1 downto 0);
 			  -- SRAM1 ctrl
            address1 : in  STD_LOGIC_VECTOR (14 downto 0);
            data_out1, WRAM_dout : out  STD_LOGIC_VECTOR (7 downto 0);
 			  data_in1 : in  STD_LOGIC_VECTOR (7 downto 0);
 			  ena1, wr1, WRAM_ena : in STD_LOGIC;
 			  -- SRAM1 port
-			  SRAM1_add : out std_logic_vector(18 downto 0);
-			  SRAM1_data : inout std_logic_vector(7 downto 0);
-			  SRAM1_nCS1 : out std_logic;
-			  SRAM1_nOE : out std_logic;
-			  SRAM1_nWE : out std_logic;
+			  SRAM1_add : out STD_LOGIC_VECTOR (18 downto 0);
+			  SRAM1_data : inout STD_LOGIC_VECTOR (7 downto 0);
+			  SRAM1_nCS1 : out STD_LOGIC;
+			  SRAM1_nOE : out STD_LOGIC;
+			  SRAM1_nWE : out STD_LOGIC;
 			  -- SRAM2 ctrl
            address2 : in  STD_LOGIC_VECTOR (12 downto 0);
            data_out2 : out  STD_LOGIC_VECTOR (7 downto 0);
 			  data_in2 : in  STD_LOGIC_VECTOR (7 downto 0);
 			  ena2, wr2 : in STD_LOGIC;
 			  -- SRAM2 port
-			  SRAM2_add : out std_logic_vector(18 downto 0);
-			  SRAM2_data : inout std_logic_vector(7 downto 0);
-			  SRAM2_nCS1 : out std_logic;
-			  SRAM2_nOE : out std_logic;
-			  SRAM2_nWE : out std_logic;
+			  SRAM2_add : out STD_LOGIC_VECTOR (18 downto 0);
+			  SRAM2_data : inout STD_LOGIC_VECTOR (7 downto 0);
+			  SRAM2_nCS1 : out STD_LOGIC;
+			  SRAM2_nOE : out STD_LOGIC;
+			  SRAM2_nWE : out STD_LOGIC;
 			  -- SPI Flash
 			  spi_clk  : buffer STD_LOGIC;
 			  spi_cs   : out STD_LOGIC;
 			  spi_din  : in STD_LOGIC;
 			  spi_dout : out STD_LOGIC;
-			  spi_busy : out STD_LOGIC;
-			  DBG_state : out std_logic_vector(7 downto 0));
+			  spi_status : out STD_LOGIC_VECTOR(2 downto 0));
 	end component;
 
 	COMPONENT NES_2C02
@@ -190,20 +199,6 @@ architecture Behavioral of NES_FPGA is
 	  );
 	END COMPONENT;
 
-	COMPONENT palette
-	PORT(
-		clk : IN std_logic;
-		vs_tmp : IN std_logic;
-		hs_tmp : IN std_logic;
-		color : IN std_logic_vector(5 downto 0);          
-		vsync : OUT std_logic;
-		hsync : OUT std_logic;
-		VGA_RED : OUT std_logic_vector(2 downto 0);
-		VGA_GREEN : OUT std_logic_vector(2 downto 0);
-		VGA_BLUE : OUT std_logic_vector(2 downto 0)
-		);
-	END COMPONENT;
-
 	COMPONENT LCD_SPI_Ctrl
 	PORT(
 		clk_50MHz : IN std_logic;
@@ -228,20 +223,21 @@ architecture Behavioral of NES_FPGA is
 	  );
 	END COMPONENT;
 
-	signal clk, clk_21MHz_b, clk_85, clk_tmp, clk_cpu, clk_2cpu : std_logic;
-	signal RSTN : std_logic;
+	signal clk_cpu, clk_2cpu : std_logic;
+	signal RSTN, enable : std_logic;
 
 	--signaux INES reader
-	signal done, rst_init, PRG_ena : std_logic;
+	signal done, rst_init, PRG_ena, ask_saving, MMC_irq : std_logic;
+	signal spi_status : std_logic_vector(2 downto 0);
 	
 	--CPU Bus signals
 	signal Addr_bus, DMA_addr, CPU_addr : std_logic_vector(15 downto 0);
 	signal DMA_dout, DMA_reg, CPU_dout, CPU_din, RAM_dout, PRG_Data : std_logic_vector(7 downto 0);
-	signal DMA_off, DMA_CS, we_sync, DMA_wrn, RAM_ena, CPU_wr, CPU_wrn, CPU_nmi, CPU_irq, CPU_rdy : std_logic;
+	signal DMA_off, DMA_CS, DMA_wrn, RAM_ena, CPU_wr, CPU_wrn, CPU_nmi, CPU_irq, CPU_rdy : std_logic;
 	signal Ctrl1_ena, Ctrl2_ena : std_logic;
 	
 	--PPU signals
-	signal PPU_CS, PPU_rw, VBl_flag, sync, vs_tmp, hs_tmp : std_logic;
+	signal PPU_CS, PPU_rw, VBl_flag, sync : std_logic;
 	signal PPU_din, PPU_dout, CHR_Data_in, CHR_Data_out : std_logic_vector(7 downto 0);
 	signal CHR_Addr : std_logic_vector(13 downto 0);
 	signal color : std_logic_vector(5 downto 0);
@@ -253,7 +249,7 @@ architecture Behavioral of NES_FPGA is
 	signal dmc_address : std_logic_vector(15 downto 0);
 	signal PCM_signal : std_logic_vector(9 downto 0);
 	signal dmc_DmaOn : std_logic_vector(2 downto 0);
-	signal APU_CS : std_logic;
+	signal APU_CS, APU_irq : std_logic;
 
 	--WRAM signals
 	signal WRAM_ena : std_logic;
@@ -319,15 +315,24 @@ architecture Behavioral of NES_FPGA is
 begin
 
 	-- Reset
-	process(clk_21MHz_b)
-	variable count : integer range 0 to 10000 :=0;
+	process(clk_21MHz)
+		variable count : integer range 0 to 10000 :=0;
+--		variable reset_pending : std_logic := '0';
 	begin
-	if clk_21MHz_b'event and clk_21MHz_b='1' then
+	if clk_21MHz'event and clk_21MHz='1' then
 		if BOUTON_RST = '0' then
-			count := 0;
-			RSTN <= '0';
-			rst_init <= '1';
+--				ask_saving <= spi_status(1);	-- save pending
+--				reset_pending := '1';
+--		elsif reset_pending = '1' then
+--			RSTN <= '0';
+--			if spi_status(1) = '0' then
+				count := 0;
+				RSTN <= '0';
+				rst_init <= '1';
+--				reset_pending := '0';
+--			end if;
 		elsif done = '0' and count < 8192 then
+--if done = '0' and count < 8192 then
 			RSTN <= '0';
 			rst_init <= '1';
 			count := count + 1;
@@ -339,15 +344,32 @@ begin
 	end if;
 	end process;
 
+	-- Save
+	process(clk_21MHz)
+	begin
+	if clk_21MHz'event and clk_21MHz = '1' then
+		if RSTN = '0' then
+			enable <= '1';
+		elsif switch(3) = '1' then
+			ask_saving <= spi_status(1);	-- save pending
+			enable <= '0';
+		elsif spi_status(1) = '0' then
+			ask_saving <= '0';	-- save pending
+			enable <= '1';
+		end if;
+	end if;
+	end process;
+
+
 	Cartridge : INES_reader Port map (
-			  clk => clk,
-			  clk_50MHz => clk,
+			  clk => clk_21MHz,
+			  clk_50MHz => clk_21MHz,
 			  M2 => clk_cpu,
            reset => rst_init,
-			  test => open,
+			  test => test,
            done => done,
-			  save_error => BLed(1),
-			  irq_n => CPU_irq,
+			  ask_saving => ask_saving,
+			  irq_n => MMC_irq,
 			  VRAM_mirror => VRAM_mirror,
 			  -- SRAM1 ctrl
            address1 => Addr_bus(14 downto 0),
@@ -379,17 +401,17 @@ begin
 			  SRAM2_nWE => SRAM2_nWE,
 			  -- SPI Flash
 			  spi_clk => spi_clk,
-			  spi_cs => spi_cs,
+			  spi_cs => spi_cs_e,
 			  spi_din => spi_din,
 			  spi_dout => spi_dout,
-			  spi_busy => BLed(0),
-			  DBG_state => DBG_state);
+			  spi_status => spi_status);
 
 -- Only for using RAM 128k
 --SRAM1_add(18 downto 17) <= "11";
 --SRAM2_add(18 downto 17) <= "11";
 
-clk_21MHz_b <= clk_21MHz;
+-- Disable internal configuration SPI Flash
+	spi_cs <= '1';
 
 	process(clk_21MHz)
 	variable count : integer range 0 to 6;
@@ -406,12 +428,11 @@ clk_21MHz_b <= clk_21MHz;
 		end if;
 	end if;
 	end process;
-	clk <= clk_21MHz;
 
 	--Cpu clock = 1.789773 MHz for NTSC NES
 
 	Inst_NES_2C02: NES_2C02 PORT MAP(
-		clk => clk,
+		clk => clk_21MHz,
 		rstn => rstn,
 		ChipSelect_n => PPU_CS,
 		ReadWrite => PPU_rw,
@@ -431,23 +452,17 @@ clk_21MHz_b <= clk_21MHz;
 		VGA_HSYNC => VGA_HSYNC,
 		color => color,
 		test_hit => test_hit);
+--VGA_VSYNC <= '0';
+--VGA_HSYNC <= '0';
 
 	Inst_Palette : ROM_Palette
 	  PORT MAP (
-		 clka => clk,
+		 clka => clk_21MHz,
 		 addra => color,
 		 douta(14 downto 10) => VGA_RED,
 		 douta(9 downto 5) => VGA_GREEN,
 		 douta(4 downto 0) => VGA_BLUE
 	  );
-
---	process(clk)
---	begin
---	if clk'event and clk = '1' then
---		VGA_VSYNC <= vs_tmp;
---		VGA_HSYNC <= hs_tmp;
---	end if;
---	end process;
 
 	CPU_Ram : CPU_Ram_2k	--Ram 2k is mirrored to 8k
 	  PORT MAP (
@@ -522,7 +537,7 @@ Addr_bus <= dmc_address when dmc_DmaOn(2) = '1' else
 					CPU_addr when DMA_off = '1' else DMA_addr;
 PPU_din <= CPU_dout when DMA_off = '1' else DMA_dout;
 PPU_rw <= (not CPU_wr) when DMA_off = '1' else (DMA_wrn);
-CPU_rdy <= DMA_off and (not dmc_DmaOn(0));
+CPU_rdy <= DMA_off and (not dmc_DmaOn(0));-- and enable;
 
 --Address decoder
 RAM_ena <= '1' when Addr_bus(15 downto 13) = "000" else '0';	--$0000 to $1FFF
@@ -537,17 +552,19 @@ PRG_ena <= Addr_bus(15);													--$8000 to $FFFF
 CPU_din <= 	CPU_dout when CPU_wrn = '0' else
 				RAM_dout when RAM_ena = '1' else
 				PPU_dout when PPU_CS = '0' else
+--				APU_dout when APU_CS = '1' else
 				WRAM_dout when WRAM_ena = '1' else
 				Prg_data when PRG_ena = '1' else
 				("0000000" & Ctrl_D1) when Ctrl1_ena = '1' else
 				("0000000" & Ctrl_D2) when Ctrl2_ena = '1' else
-				(others => '-');
+				(others => 'Z');
 APU_din <= CPU_din when dmc_DmaOn(2) = '1' else CPU_dout;
 	
 CPU_nmi <= Vbl_Flag;
+CPU_irq <= MMC_irq and APU_irq;
 
 --DMA
-process(clk_cpu)
+process(clk_cpu, rstn)
 variable count : integer range 0 to 256;
 variable step : std_logic;
 begin
@@ -621,18 +638,19 @@ end process;
 		Data_in => APU_din,
 		dmc_DmaOn => dmc_DmaOn,
 		dmc_address => dmc_address,
-		irq => open, --CPU_irq,
+		irq => APU_irq,
 		DMA_off => DMA_off,
-		PCM_out => PCM_signal, test => test
+		PCM_out => PCM_signal, 
+		test => open
 	);
 
 	-- I2S output process, master_clock 28MHz for 44.1kHz
-	process(clk)
+	process(clk_21MHz)
 		variable serial_count : integer range 0 to 31;
 		variable serial_clk : std_logic;
 		variable output_sample : std_logic_vector(31 downto 0);
 	begin
-	if clk'event and clk = '1' then
+	if clk_21MHz'event and clk_21MHz = '1' then
 		serial_clk := not serial_clk;
 		if serial_clk = '0' then	-- All changes mades on falling edges of serial clock
 			if serial_count = 0 then
@@ -646,7 +664,7 @@ end process;
 			elsif serial_count = 16 then
 				LRCK <= '1';
 			elsif serial_count = 31 then	-- Next sample
-				output_sample := PCM_signal & "111111" & PCM_signal & "111111";
+				output_sample := not PCM_signal(9) & PCM_signal(8 downto 0) & "000000" & not PCM_signal(9) & PCM_signal(8 downto 0) & "000000";
 			end if;
 		end if;
 		BCK <= serial_clk;
@@ -656,45 +674,71 @@ end process;
 
 	--De_mux Switches / Leds
 	process(clk_cpu)
-		variable count : integer range 0 to 31;
+		variable count, step : integer range 0 to 31;
 	begin
 	if clk_cpu'event and clk_cpu = '1' then
-		case count is
-			when 0 | 1  =>
-				Sw_Ld_E <= '0';	-- Test switch
-				Sw_Ld <= (others => 'Z');
-			when 2 =>
-				Switch <= Sw_Ld;
-			when others =>
-				Sw_Ld_E <= '1';	-- Leds On
-				Sw_Ld <= Bled;
-		end case;
-		count := count + 1;
+		count := (count + 1) mod 32;
+		if count = 0 then
+			case step is
+				when 0 | 1  =>
+					Sw_Ld_E <= '0';	-- Test switch
+					Sw_Ld <= (others => 'Z');
+				when 2 =>
+					Switch <= Sw_Ld;
+				when others =>
+					Sw_Ld_E <= '1';	-- Leds On
+					Sw_Ld <= Bled;
+			end case;
+			step := step + 1;
+		end if;
 	end if;
 	end process;
 
+-- This output launch the configuration of FPGA when = '1'
+conf_launch <= '0';
+conf_clk <= '0';
+conf_data <= '0';
+
 --	Inst_LCD_test: LCD_SPI_Ctrl PORT MAP(
---		clk_50MHz => clk21MHz_b,
+--		clk_50MHz => clk_21MHz,
 --		reset => rst_init,
 --		lcd_clk => lcd_clk,
 --		lcd_rst => lcd_rst,
 --		lcd_data => lcd_data,
---		adresse => x"FFFF",
+--		adresse => Addr_bus,
 ----		adresse(15) => '0',
 --		data_1 => test,
---		data_2 => x"FF",
+--		data_2 => PRG_data,
+----		data_2(7 downto 3) => "00000",
+----		data_2(2 downto 0) => spi_status,
 --		txt_in => "0000000",
 --		txt_address => open,
 --		latch_enable => '1'
 --	);
 
-led <= '1' & not Ctrl_D1 & done & rst_init;
+--process(clk_cpu)
+--variable cnt : integer;
+--begin
+--if clk_cpu'event and clk_cpu = '0' then
+--cnt := cnt + 1;
+--if cnt = 1000000 then
+--	cnt := 0;
+--	CPU_addr <= std_logic_vector(unsigned(CPU_addr)+1);
+--	if unsigned(CPU_addr) > x"0010" then
+--		CPU_addr <= X"0000";
+--	end if;
+--end if;
+--end if;
+--end process;
+
+led <= not(done & spi_status);
 --Extb <= (others => '0');
-Extb <= DBG_state(6 downto 0);
+--Extb <= DBG_state(6 downto 0);
 
 --test_hit2 <= PRG_ena and we_sync;
---Extb <= test(6 downto 0);
-BLed(3 downto 2) <= (others => '0');
+--Extb <= test(3 downto 0);
+Bled <= done & spi_status;	-- save error, save pending, spi busy
+--BLed(3) <= '0'; --(others => '0');
 
 
 end Behavioral;
